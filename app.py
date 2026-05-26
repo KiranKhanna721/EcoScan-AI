@@ -1,6 +1,35 @@
 import streamlit as st
 import json
+import time
 import requests
+
+# ── Pendo Track Event helper ────────────────────────────────────────────────
+PENDO_TRACK_URL = "https://data.pendo.io/data/track"
+PENDO_INTEGRATION_KEY = "69d32b0b-36ec-43ea-866f-3f4bbd6dca00"
+
+
+def pendo_track(event_name: str, properties: dict = None):
+    """Send a server-side Track Event to Pendo."""
+    try:
+        payload = {
+            "type": "track",
+            "event": event_name,
+            "visitorId": "system",
+            "accountId": "system",
+            "timestamp": int(time.time() * 1000),
+            "properties": properties or {},
+        }
+        requests.post(
+            PENDO_TRACK_URL,
+            headers={
+                "Content-Type": "application/json",
+                "x-pendo-integration-key": PENDO_INTEGRATION_KEY,
+            },
+            json=payload,
+            timeout=5,
+        )
+    except Exception:
+        pass
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -257,6 +286,23 @@ with tab1:
                 total_alt = sum(r.get("alt_co2_kg", 0) for r in results)
                 saved = total_co2 - total_alt
 
+                impact_counts = {"high": 0, "medium": 0, "low": 0}
+                for r in results:
+                    lvl = r.get("impact_level", "medium")
+                    if lvl in impact_counts:
+                        impact_counts[lvl] += 1
+
+                pendo_track("purchase_carbon_scan_completed", {
+                    "item_count": len(results),
+                    "total_co2_kg": round(total_co2, 2),
+                    "total_alternative_co2_kg": round(total_alt, 2),
+                    "potential_saving_kg": round(saved, 2),
+                    "potential_saving_pct": round(saved / total_co2 * 100) if total_co2 else 0,
+                    "high_impact_count": impact_counts["high"],
+                    "medium_impact_count": impact_counts["medium"],
+                    "low_impact_count": impact_counts["low"],
+                })
+
                 st.markdown("---")
                 m1, m2, m3 = st.columns(3)
                 m1.metric("Total CO₂e", f"{total_co2:.1f} kg")
@@ -280,8 +326,18 @@ with tab1:
                     """, unsafe_allow_html=True)
 
             except RuntimeError as e:
+                pendo_track("purchase_carbon_scan_failed", {
+                    "error_type": "RuntimeError",
+                    "error_message": str(e)[:200],
+                    "item_count": len(purchases_input.strip().splitlines()),
+                })
                 st.error(f"API Error: {e}")
             except (ValueError, KeyError) as e:
+                pendo_track("purchase_carbon_scan_failed", {
+                    "error_type": type(e).__name__,
+                    "error_message": str(e)[:200],
+                    "item_count": len(purchases_input.strip().splitlines()),
+                })
                 st.error(f"Could not parse AI response: {e}")
                 st.code(raw if 'raw' in locals() else "No response received")
 
@@ -341,6 +397,20 @@ with tab2:
                 if not isinstance(tips, list):
                     tips = [tips]
 
+                total_saving_pct = sum(t.get("estimated_saving_pct", 0) for t in tips)
+                total_monthly_saving = int(monthly_bill * total_saving_pct / 100)
+
+                pendo_track("energy_plan_generated", {
+                    "business_type": biz_type,
+                    "monthly_bill_gbp": monthly_bill,
+                    "heating_type": heating,
+                    "lighting_type": lighting,
+                    "has_extra_context": bool(extra_info and extra_info.strip()),
+                    "recommendation_count": len(tips),
+                    "total_estimated_saving_pct": total_saving_pct,
+                    "total_monthly_saving_gbp": total_monthly_saving,
+                })
+
                 st.markdown("---")
                 st.markdown(f"### ⚡ Your Energy Action Plan — {biz_type}")
 
@@ -371,8 +441,24 @@ with tab2:
                             st.caption(f"Payback: {payback} months")
 
             except RuntimeError as e:
+                pendo_track("energy_plan_generation_failed", {
+                    "error_type": "RuntimeError",
+                    "error_message": str(e)[:200],
+                    "business_type": biz_type,
+                    "monthly_bill_gbp": monthly_bill,
+                    "heating_type": heating,
+                    "lighting_type": lighting,
+                })
                 st.error(f"API Error: {e}")
             except (ValueError, KeyError) as e:
+                pendo_track("energy_plan_generation_failed", {
+                    "error_type": type(e).__name__,
+                    "error_message": str(e)[:200],
+                    "business_type": biz_type,
+                    "monthly_bill_gbp": monthly_bill,
+                    "heating_type": heating,
+                    "lighting_type": lighting,
+                })
                 st.error(f"Could not parse AI response: {e}")
                 st.code(raw if 'raw' in locals() else "No response received")
 
